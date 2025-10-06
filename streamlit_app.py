@@ -2,19 +2,72 @@ import streamlit as st
 import torch
 from train_bilstm_transliteration_complete import Encoder, Decoder, Seq2Seq, BPE, DEVICE
 
-# Load trained model and BPE vocabularies
-# (same code I gave you earlier)
+@st.cache_resource
+def load_model_and_bpe():
+    src_bpe = torch.load("src_bpe.pkl", map_location=DEVICE)
+    trg_bpe = torch.load("trg_bpe.pkl", map_location=DEVICE)
+
+    # Model must match training architecture
+    model = Seq2Seq(
+        Encoder(len(src_bpe.vocab), emb_dim=128, hidden_size=256, num_layers=2, dropout=0.3),
+        Decoder(len(trg_bpe.vocab), emb_dim=128, hidden_size=256, num_layers=2, dropout=0.3),
+        DEVICE
+    ).to(DEVICE)
+
+    model.load_state_dict(torch.load("exp_small_best.pt", map_location=DEVICE))
+    model.eval()
+    return model, src_bpe, trg_bpe
+
+model, src_bpe, trg_bpe = load_model_and_bpe()
+trg_rev_vocab = {v: k for k, v in trg_bpe.vocab.items()}
+
+def transliterate_urdu(text):
+    model.eval()
+    text = text.strip()
+    src_ids = src_bpe.encode(text)
+    src = torch.tensor(src_ids, dtype=torch.long).unsqueeze(0).to(DEVICE)
+
+    trg_sos = trg_bpe.vocab["<sos>"]
+    trg_eos = trg_bpe.vocab["<eos>"]
+    input_tok = torch.tensor([trg_sos], dtype=torch.long).to(DEVICE)
+
+    with torch.no_grad():
+        enc_out, (h, c) = model.encoder(src)
+        dec_h = model._reduce_bidir(h)
+        dec_c = model._reduce_bidir(c)
+
+        # adjust decoder hidden states if fewer than decoder layers
+        dec_layers = model.decoder.rnn.num_layers
+        if dec_h.size(0) < dec_layers:
+            last_h = dec_h[-1:].repeat(dec_layers - dec_h.size(0), 1, 1)
+            dec_h = torch.cat([dec_h, last_h], dim=0)
+            last_c = dec_c[-1:].repeat(dec_layers - dec_c.size(0), 1, 1)
+            dec_c = torch.cat([dec_c, last_c], dim=0)
+
+        hidden = (dec_h, dec_c)
+        output_tokens = []
+        for _ in range(120):
+            logits, hidden = model.decoder(input_tok, hidden)
+            pred = logits.argmax(1)
+            token = pred.item()
+            if token == trg_eos:
+                break
+            output_tokens.append(trg_rev_vocab.get(token, ""))
+            input_tok = pred
+
+    return " ".join(output_tokens)
 
 st.title("📝 Urdu → Roman Urdu Transliteration")
-st.write("This app converts Urdu text into its Roman Urdu form using a BiLSTM sequence-to-sequence model.")
+st.write("This app converts Urdu text into Roman Urdu using a BiLSTM seq2seq model.")
 
-user_input = st.text_area("Type Urdu text here:", placeholder="یہ دنیا بہت خوبصورت ہے")
+user_input = st.text_area("Enter Urdu text:", placeholder="یہ دنیا بہت خوبصورت ہے")
 
 if st.button("Transliterate"):
     if user_input.strip():
-        with st.spinner("Processing..."):
+        with st.spinner("Transliterating..."):
             output = transliterate_urdu(user_input)
-        st.success("Roman Urdu Transliteration:")
-        st.markdown(f"**{output}**")
+        st.success("**Roman Urdu:**")
+        st.markdown(f"### {output}")
     else:
-        st.warning("Please enter Urdu text before clicking Transliterate.")
+        st.warning("Please enter some Urdu text first.")
+
