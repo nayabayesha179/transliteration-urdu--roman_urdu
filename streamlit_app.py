@@ -40,13 +40,13 @@ class BPE:
         return result
 
 # ===============================
-# MODEL ARCHITECTURE
+# EXACT MODEL ARCHITECTURE FROM TRAINING
 # ===============================
 class Encoder(nn.Module):
-    def __init__(self, input_dim, emb_dim=128, hidden_size=256, num_layers=2, dropout=0.3):
+    def __init__(self, input_dim, emb_dim=128, hid_dim=256, n_layers=2, dropout=0.3):
         super().__init__()
         self.embedding = nn.Embedding(input_dim, emb_dim, padding_idx=0)
-        self.rnn = nn.LSTM(emb_dim, hidden_size, num_layers=num_layers, 
+        self.rnn = nn.LSTM(emb_dim, hid_dim, num_layers=n_layers, 
                           dropout=dropout, batch_first=True, bidirectional=True)
         self.dropout = nn.Dropout(dropout)
         
@@ -56,12 +56,12 @@ class Encoder(nn.Module):
         return outputs, (h, c)
 
 class Decoder(nn.Module):
-    def __init__(self, output_dim, emb_dim=128, hidden_size=256, num_layers=2, dropout=0.3):
+    def __init__(self, output_dim, emb_dim=128, hid_dim=256, n_layers=2, dropout=0.3):
         super().__init__()
         self.embedding = nn.Embedding(output_dim, emb_dim, padding_idx=0)
-        self.rnn = nn.LSTM(emb_dim, hidden_size, num_layers=num_layers, 
+        self.rnn = nn.LSTM(emb_dim, hid_dim, num_layers=n_layers, 
                           dropout=dropout, batch_first=True)
-        self.fc = nn.Linear(hidden_size, output_dim)
+        self.fc = nn.Linear(hid_dim, output_dim)
         self.dropout = nn.Dropout(dropout)
         
     def forward(self, token_in, hidden):
@@ -71,20 +71,22 @@ class Decoder(nn.Module):
         return logits, hidden
 
 class Seq2Seq(nn.Module):
-    def __init__(self, encoder, decoder, device):
+    def __init__(self, encoder, decoder, enc_hid, dec_hid):
         super().__init__()
         self.encoder = encoder
         self.decoder = decoder
-        self.device = device
+        # ADD THESE LAYERS - they exist in your saved model
+        self.h_map = nn.Linear(enc_hid * 2, dec_hid)
+        self.c_map = nn.Linear(enc_hid * 2, dec_hid)
         
     def _reduce_bidir(self, h):
-        # Simple bidirectional reduction
         n2, B, H = h.size()
         n = n2 // 2
         h = h.view(n, 2, B, H)
-        h_combined = torch.cat([h[:,0,:,:], h[:,1,:,:]], dim=2)
-        return h_combined
-            
+        hcat = torch.cat([h[:,0,:,:], h[:,1,:,:]], dim=2)
+        mapped = torch.tanh(self.h_map(hcat))
+        return mapped
+    
     def forward(self, src, trg, teacher_forcing_ratio=0.5):
         B = src.size(0)
         T = trg.size(1)
@@ -132,41 +134,71 @@ def load_model_and_bpe():
                 zip_ref.extractall(".")
             st.success("✅ Model extracted!")
         
-        # Load tokenizers
+        # Load tokenizers - USE THE ORIGINAL ONES FROM TRAINING
         st.write("📁 Loading tokenizers...")
         
-        src_bpe_path = "streamlit_src_bpe.pkl"
-        trg_bpe_path = "streamlit_trg_bpe.pkl"
+        # Try different tokenizer files in order
+        tokenizer_pairs = [
+            ("src_bpe.pkl", "trg_bpe.pkl"),  # Original training tokenizers
+            ("urdu_transliterator_src_bpe.pkl", "urdu_transliterator_trg_bpe.pkl"),  # Resaved ones
+            ("streamlit_src_bpe.pkl", "streamlit_trg_bpe.pkl"),  # New ones
+        ]
         
-        if os.path.exists(src_bpe_path) and os.path.exists(trg_bpe_path):
-            with open(src_bpe_path, "rb") as f:
-                src_bpe = pickle.load(f)
-            with open(trg_bpe_path, "rb") as f:
-                trg_bpe = pickle.load(f)
-            st.success("✅ Tokenizers loaded!")
-        else:
-            st.error("❌ Tokenizer files not found")
+        src_bpe = None
+        trg_bpe = None
+        
+        for src_file, trg_file in tokenizer_pairs:
+            if os.path.exists(src_file) and os.path.exists(trg_file):
+                st.write(f"Trying {src_file}, {trg_file}...")
+                try:
+                    with open(src_file, "rb") as f:
+                        src_bpe = pickle.load(f)
+                    with open(trg_file, "rb") as f:
+                        trg_bpe = pickle.load(f)
+                    st.success(f"✅ Loaded {src_file}, {trg_file}")
+                    st.write(f"Source vocab size: {len(src_bpe.vocab)}")
+                    st.write(f"Target vocab size: {len(trg_bpe.vocab)}")
+                    break
+                except Exception as e:
+                    st.warning(f"Failed to load {src_file}: {e}")
+                    continue
+        
+        if src_bpe is None or trg_bpe is None:
+            st.error("❌ Could not load any tokenizer files")
             return None, None, None
 
-        # Load model
+        # Load model with EXACT architecture from training
+        st.write("🧠 Creating model with exact training architecture...")
+        
+        # Use the actual vocabulary sizes from the tokenizers
+        src_vocab_size = len(src_bpe.vocab)
+        trg_vocab_size = len(trg_bpe.vocab)
+        
+        st.write(f"Creating model with:")
+        st.write(f"- Source vocab: {src_vocab_size}")
+        st.write(f"- Target vocab: {trg_vocab_size}")
+        
+        encoder = Encoder(src_vocab_size, emb_dim=128, hid_dim=256, n_layers=2, dropout=0.3)
+        decoder = Decoder(trg_vocab_size, emb_dim=128, hid_dim=256, n_layers=2, dropout=0.3)
+        model = Seq2Seq(encoder, decoder, enc_hid=256, dec_hid=256)
+        
+        # Load model weights
         if not os.path.exists(model_path):
-            st.error(f"❌ Model file not found")
+            st.error(f"❌ Model file not found: {model_path}")
             return None, None, None
-
-        model = Seq2Seq(
-            Encoder(len(src_bpe.vocab)),
-            Decoder(len(trg_bpe.vocab)),
-            DEVICE
-        ).to(DEVICE)
-
+            
+        st.write("📥 Loading model weights...")
         model.load_state_dict(torch.load(model_path, map_location=DEVICE))
+        model.to(DEVICE)
         model.eval()
         
-        st.success("✅ Model loaded!")
+        st.success("✅ Model loaded successfully!")
         return model, src_bpe, trg_bpe
         
     except Exception as e:
-        st.error(f"❌ Error: {str(e)}")
+        st.error(f"❌ Error loading model: {str(e)}")
+        import traceback
+        st.code(traceback.format_exc())
         return None, None, None
 
 # ===============================
@@ -176,40 +208,43 @@ model, src_bpe, trg_bpe = load_model_and_bpe()
 
 if model is None or src_bpe is None or trg_bpe is None:
     st.error("Failed to load model.")
-    st.write("Required files:")
-    st.write("- urdu_transliterator_best.zip")
-    st.write("- streamlit_src_bpe.pkl")
-    st.write("- streamlit_trg_bpe.pkl")
-    
     st.write("Available files:")
     for file in os.listdir('.'):
-        st.write(f"- {file}")
+        if any(ext in file for ext in ['.pkl', '.pt', '.zip']):
+            st.write(f"- {file}")
     st.stop()
 
 trg_rev_vocab = {v: k for k, v in trg_bpe.vocab.items()}
 
 # ===============================
-# TRANSLITERATION
+# TRANSLITERATION FUNCTION
 # ===============================
 def transliterate_urdu(text):
     try:
         model.eval()
         text = text.strip()
         
+        # Encode source text
         src_ids = src_bpe.encode(text)
         if not src_ids:
-            return "No output"
+            return "No output generated"
             
         src = torch.tensor(src_ids, dtype=torch.long).unsqueeze(0).to(DEVICE)
+
+        # Get special tokens
         trg_sos = trg_bpe.vocab["<sos>"]
         trg_eos = trg_bpe.vocab["<eos>"]
         input_tok = torch.tensor([trg_sos], dtype=torch.long).to(DEVICE)
 
         with torch.no_grad():
+            # Encoder forward
             enc_out, (h, c) = model.encoder(src)
+            
+            # Use the exact reduction method from training
             dec_h = model._reduce_bidir(h)
             dec_c = model._reduce_bidir(c)
 
+            # Adjust decoder hidden states if needed
             dec_layers = model.decoder.rnn.num_layers
             if dec_h.size(0) < dec_layers:
                 last_h = dec_h[-1:].repeat(dec_layers - dec_h.size(0), 1, 1)
@@ -217,10 +252,11 @@ def transliterate_urdu(text):
                 last_c = dec_c[-1:].repeat(dec_layers - dec_c.size(0), 1, 1)
                 dec_c = torch.cat([dec_c, last_c], dim=0)
 
-            hidden = (dec_h, dec_c)
+            hidden = (dec_h.contiguous(), dec_c.contiguous())
             output_tokens = []
             
-            for _ in range(120):
+            # Decoder forward
+            for _ in range(120):  # max length
                 logits, hidden = model.decoder(input_tok, hidden)
                 pred = logits.argmax(1)
                 token = pred.item()
@@ -234,10 +270,10 @@ def transliterate_urdu(text):
                     
                 input_tok = pred
 
-        return " ".join(output_tokens) if output_tokens else "No output"
+        return " ".join(output_tokens) if output_tokens else "No output generated"
         
     except Exception as e:
-        return f"Error: {str(e)}"
+        return f"Error during transliteration: {str(e)}"
 
 # ===============================
 # STREAMLIT UI
@@ -255,3 +291,16 @@ if st.button("Transliterate"):
         st.markdown(f"### {output}")
     else:
         st.warning("Please enter Urdu text")
+
+# Debug info
+with st.expander("Debug Information"):
+    st.write("Model information:")
+    if model and src_bpe and trg_bpe:
+        st.write(f"- Source vocabulary size: {len(src_bpe.vocab)}")
+        st.write(f"- Target vocabulary size: {len(trg_bpe.vocab)}")
+        st.write(f"- Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+    
+    st.write("Available files:")
+    for file in os.listdir('.'):
+        if any(ext in file for ext in ['.pkl', '.pt', '.zip']):
+            st.write(f"- {file}")
