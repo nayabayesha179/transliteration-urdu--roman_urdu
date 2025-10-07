@@ -2,7 +2,24 @@ import os
 import zipfile
 import torch
 import streamlit as st
-from train_bilstm_transliteration_complete import Encoder, Decoder, Seq2Seq, DEVICE
+import pickle
+
+# Try to import your model classes with fallbacks
+try:
+    from train_bilstm_transliteration_complete import Encoder, Decoder, Seq2Seq, DEVICE
+except ImportError:
+    st.error("❌ Could not import model classes. Please make sure all model files are available.")
+    # Define minimal versions as fallback
+    class Encoder:
+        def __init__(self, *args, **kwargs):
+            pass
+    class Decoder:
+        def __init__(self, *args, **kwargs):
+            pass
+    class Seq2Seq:
+        def __init__(self, *args, **kwargs):
+            pass
+    DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 @st.cache_resource
 def load_model_and_bpe():
@@ -17,24 +34,43 @@ def load_model_and_bpe():
                 zip_ref.extractall(".")
             st.success("✅ Model extracted successfully!")
         
-        # === LOAD TOKENIZERS ===
-        import pickle
-        with open("urdu_transliterator_src_bpe.pkl", "rb") as f:
-            src_bpe = pickle.load(f)
-        with open("urdu_transliterator_trg_bpe.pkl", "rb") as f:
-            trg_bpe = pickle.load(f)
-
-        st.write("✅ Tokenizers loaded successfully!")
-        st.write(f"Source vocab size: {len(src_bpe.vocab)}")
-        st.write(f"Target vocab size: {len(trg_bpe.vocab)}")
+        # === LOAD TOKENIZERS WITH STANDARD PICKLE ===
+        # Try different possible tokenizer names
+        tokenizer_files = {
+            "standard": ["urdu_transliterator_src_bpe_standard.pkl", "urdu_transliterator_trg_bpe_standard.pkl"],
+            "original": ["urdu_transliterator_src_bpe.pkl", "urdu_transliterator_trg_bpe.pkl"],
+            "fallback": ["src_bpe.pkl", "trg_bpe.pkl"]
+        }
+        
+        src_bpe = None
+        trg_bpe = None
+        
+        for version, (src_file, trg_file) in tokenizer_files.items():
+            if os.path.exists(src_file) and os.path.exists(trg_file):
+                st.write(f"📁 Loading tokenizers ({version})...")
+                try:
+                    with open(src_file, "rb") as f:
+                        src_bpe = pickle.load(f)
+                    with open(trg_file, "rb") as f:
+                        trg_bpe = pickle.load(f)
+                    st.success(f"✅ Tokenizers loaded successfully ({version})!")
+                    break
+                except Exception as e:
+                    st.warning(f"⚠️ Failed to load {version} tokenizers: {e}")
+                    continue
+        
+        if src_bpe is None or trg_bpe is None:
+            st.error("❌ Could not load any tokenizer files")
+            # Show available files
+            st.write("📁 Available files:")
+            for file in os.listdir('.'):
+                if '.pkl' in file or '.pt' in file or '.zip' in file:
+                    st.write(f"   - {file}")
+            return None, None, None
 
         # === LOAD MODEL ===
         if not os.path.exists(model_path):
             st.error(f"❌ Model file not found: {model_path}")
-            # Show available files
-            st.write("📁 Available files:")
-            for file in os.listdir('.'):
-                st.write(f"   - {file}")
             return None, None, None
 
         # Model architecture must match training
@@ -53,8 +89,6 @@ def load_model_and_bpe():
         
     except Exception as e:
         st.error(f"❌ Error loading model: {str(e)}")
-        import traceback
-        st.code(traceback.format_exc())
         return None, None, None
 
 # Load model and tokenizers
@@ -64,48 +98,80 @@ if model is None or src_bpe is None or trg_bpe is None:
     st.error("Failed to load model. Please check if all required files are uploaded.")
     st.write("**Required files:**")
     st.write("- urdu_transliterator_best.zip (compressed model)")
-    st.write("- urdu_transliterator_src_bpe.pkl (source tokenizer)")
-    st.write("- urdu_transliterator_trg_bpe.pkl (target tokenizer)")
+    st.write("- urdu_transliterator_src_bpe_standard.pkl (source tokenizer)")
+    st.write("- urdu_transliterator_trg_bpe_standard.pkl (target tokenizer)")
     st.stop()
 
+# Create reverse vocabulary
 trg_rev_vocab = {v: k for k, v in trg_bpe.vocab.items()}
 
 def transliterate_urdu(text):
-    model.eval()
-    text = text.strip()
-    src_ids = src_bpe.encode(text)
-    src = torch.tensor(src_ids, dtype=torch.long).unsqueeze(0).to(DEVICE)
+    try:
+        model.eval()
+        text = text.strip()
+        
+        # Encode source text
+        if hasattr(src_bpe, 'encode'):
+            src_ids = src_bpe.encode(text)
+        else:
+            # Fallback encoding
+            src_ids = [src_bpe.vocab.get(char, src_bpe.vocab.get('<unk>', 3)) for char in text.lower()]
+        
+        if not src_ids:
+            return "No output generated"
+            
+        src = torch.tensor(src_ids, dtype=torch.long).unsqueeze(0).to(DEVICE)
 
-    trg_sos = trg_bpe.vocab["<sos>"]
-    trg_eos = trg_bpe.vocab["<eos>"]
-    input_tok = torch.tensor([trg_sos], dtype=torch.long).to(DEVICE)
+        # Get special tokens
+        trg_sos = trg_bpe.vocab.get("<sos>", 1)
+        trg_eos = trg_bpe.vocab.get("<eos>", 2)
+        input_tok = torch.tensor([trg_sos], dtype=torch.long).to(DEVICE)
 
-    with torch.no_grad():
-        enc_out, (h, c) = model.encoder(src)
-        dec_h = model._reduce_bidir(h)
-        dec_c = model._reduce_bidir(c)
+        with torch.no_grad():
+            # Encoder forward
+            enc_out, (h, c) = model.encoder(src)
+            
+            # Handle bidirectional reduction (if method exists)
+            if hasattr(model, '_reduce_bidir'):
+                dec_h = model._reduce_bidir(h)
+                dec_c = model._reduce_bidir(c)
+            else:
+                # Simple fallback
+                dec_h = h
+                dec_c = c
 
-        # adjust decoder hidden states if fewer than decoder layers
-        dec_layers = model.decoder.rnn.num_layers
-        if dec_h.size(0) < dec_layers:
-            last_h = dec_h[-1:].repeat(dec_layers - dec_h.size(0), 1, 1)
-            dec_h = torch.cat([dec_h, last_h], dim=0)
-            last_c = dec_c[-1:].repeat(dec_layers - dec_c.size(0), 1, 1)
-            dec_c = torch.cat([dec_c, last_c], dim=0)
+            # Adjust decoder hidden states if needed
+            dec_layers = model.decoder.rnn.num_layers
+            if dec_h.size(0) < dec_layers:
+                last_h = dec_h[-1:].repeat(dec_layers - dec_h.size(0), 1, 1)
+                dec_h = torch.cat([dec_h, last_h], dim=0)
+                last_c = dec_c[-1:].repeat(dec_layers - dec_c.size(0), 1, 1)
+                dec_c = torch.cat([dec_c, last_c], dim=0)
 
-        hidden = (dec_h, dec_c)
-        output_tokens = []
-        for _ in range(120):
-            logits, hidden = model.decoder(input_tok, hidden)
-            pred = logits.argmax(1)
-            token = pred.item()
-            if token == trg_eos:
-                break
-            output_tokens.append(trg_rev_vocab.get(token, ""))
-            input_tok = pred
+            hidden = (dec_h, dec_c)
+            output_tokens = []
+            
+            # Decoder forward
+            for _ in range(120):  # max length
+                logits, hidden = model.decoder(input_tok, hidden)
+                pred = logits.argmax(1)
+                token = pred.item()
+                
+                if token == trg_eos:
+                    break
+                    
+                output_token = trg_rev_vocab.get(token, "")
+                if output_token and output_token not in ['<sos>', '<eos>', '<pad>', '<unk>']:
+                    output_tokens.append(output_token)
+                    
+                input_tok = pred
 
-    return " ".join(output_tokens)
+        return " ".join(output_tokens) if output_tokens else "No output generated"
+        
+    except Exception as e:
+        return f"Error during transliteration: {str(e)}"
 
+# Streamlit UI
 st.title("📝 Urdu → Roman Urdu Transliteration")
 st.write("This app converts Urdu text into Roman Urdu using a BiLSTM seq2seq model.")
 
@@ -120,8 +186,9 @@ if st.button("Transliterate"):
     else:
         st.warning("Please enter some Urdu text first.")
 
-# Debug info (optional - remove in production)
+# Debug info
 with st.expander("Debug Info"):
     st.write("📁 Files in directory:")
     for file in os.listdir('.'):
-        st.write(f" - {file}")
+        if '.pkl' in file or '.pt' in file or '.zip' in file:
+            st.write(f" - {file}")
