@@ -7,33 +7,50 @@ from train_bilstm_transliteration_complete import Encoder, Decoder, Seq2Seq, DEV
 
 @st.cache_resource
 def load_model_and_bpe():
+    try:
+        # === LOAD THE NEW FILES ===
+        import pickle
 
-        # === UNZIP THE MODEL IF NOT ALREADY ===
-    if not os.path.exists("exp_small_best.pt") and os.path.exists("exp_small_best.zip"):
-        with zipfile.ZipFile("exp_small_best.zip", "r") as zip_ref:
-            zip_ref.extractall(".")
-            st.write("✅ Model extracted from ZIP")
-   
-    import pickle
-
-    with open("src_bpe.pkl", "rb") as f:
+        # Load the NEW properly saved tokenizers
+        with open("urdu_transliterator_src_bpe.pkl", "rb") as f:
             src_bpe = pickle.load(f)
-    with open("trg_bpe.pkl", "rb") as f:
+        with open("urdu_transliterator_trg_bpe.pkl", "rb") as f:
             trg_bpe = pickle.load(f)
 
+        st.write("✅ Tokenizers loaded successfully!")
+        st.write(f"Source vocab size: {len(src_bpe.vocab)}")
+        st.write(f"Target vocab size: {len(trg_bpe.vocab)}")
 
-    # Model must match training architecture
-    model = Seq2Seq(
-        Encoder(len(src_bpe.vocab), emb_dim=128, hidden_size=256, num_layers=2, dropout=0.3),
-        Decoder(len(trg_bpe.vocab), emb_dim=128, hidden_size=256, num_layers=2, dropout=0.3),
-        DEVICE
-    ).to(DEVICE)
+        # Model must match training architecture
+        model = Seq2Seq(
+            Encoder(len(src_bpe.vocab), emb_dim=128, hidden_size=256, num_layers=2, dropout=0.3),
+            Decoder(len(trg_bpe.vocab), emb_dim=128, hidden_size=256, num_layers=2, dropout=0.3),
+            DEVICE
+        ).to(DEVICE)
 
-    model.load_state_dict(torch.load("exp_small_best.pt", map_location=DEVICE))
-    model.eval()
-    return model, src_bpe, trg_bpe
+        # Load the NEW model file
+        model.load_state_dict(torch.load("urdu_transliterator_best.pt", map_location=DEVICE))
+        model.eval()
+        
+        st.write("✅ Model loaded successfully!")
+        return model, src_bpe, trg_bpe
+        
+    except Exception as e:
+        st.error(f"❌ Error loading model: {str(e)}")
+        # Show available files for debugging
+        st.write("📁 Available files:")
+        for file in os.listdir('.'):
+            if 'urdu_transliterator' in file or file.endswith('.pkl') or file.endswith('.pt'):
+                st.write(f"   - {file}")
+        return None, None, None
 
+# Load model and tokenizers
 model, src_bpe, trg_bpe = load_model_and_bpe()
+
+if model is None or src_bpe is None or trg_bpe is None:
+    st.error("Failed to load model. Please check if the model files are in the correct directory.")
+    st.stop()
+
 trg_rev_vocab = {v: k for k, v in trg_bpe.vocab.items()}
 
 def transliterate_urdu(text):
@@ -85,4 +102,3 @@ if st.button("Transliterate"):
         st.markdown(f"### {output}")
     else:
         st.warning("Please enter some Urdu text first.")
-
