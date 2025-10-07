@@ -1,6 +1,9 @@
-import streamlit as st
+import os
+import zipfile
 import torch
-from train_bilstm_transliteration_complete import Encoder, Decoder, Seq2Seq, BPE, DEVICE
+import streamlit as st
+from train_bilstm_transliteration_complete import Encoder, Decoder, Seq2Seq, DEVICE
+
 
 @st.cache_resource
 def load_model_and_bpe():
