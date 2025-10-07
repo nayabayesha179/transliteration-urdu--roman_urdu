@@ -13,9 +13,14 @@ def load_model_and_bpe():
         with zipfile.ZipFile("exp_small_best.zip", "r") as zip_ref:
             zip_ref.extractall(".")
             st.write("✅ Model extracted from ZIP")
-            
-    src_bpe = torch.load("src_bpe.pkl", map_location=DEVICE)
-    trg_bpe = torch.load("trg_bpe.pkl", map_location=DEVICE)
+   
+    import pickle
+
+    with open("src_bpe.pkl", "rb") as f:
+            src_bpe = pickle.load(f)
+    with open("trg_bpe.pkl", "rb") as f:
+            trg_bpe = pickle.load(f)
+
 
     # Model must match training architecture
     model = Seq2Seq(
