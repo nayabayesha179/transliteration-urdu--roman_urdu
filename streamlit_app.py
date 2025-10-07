@@ -91,8 +91,30 @@ def transliterate_urdu(text):
 
         with torch.no_grad():
             enc_out, (h, c) = model.encoder(src)
-            dec_h = model._reduce_bidir(h)
-            dec_c = model._reduce_bidir(c)
+            
+            # Try different method names that might exist in your Seq2Seq class
+            if hasattr(model, '_reduce_bidir'):
+                dec_h = model._reduce_bidir(h)
+                dec_c = model._reduce_bidir(c)
+            elif hasattr(model, '_reduce'):
+                dec_h = model._reduce(h)
+                dec_c = model._reduce(c)
+            else:
+                # Fallback: simple bidirectional reduction
+                n2, B, H = h.size()
+                n = n2 // 2
+                h_combined = h.view(n, 2, B, H)
+                dec_h = torch.cat([h_combined[:,0,:,:], h_combined[:,1,:,:]], dim=2)
+                c_combined = c.view(n, 2, B, H)
+                dec_c = torch.cat([c_combined[:,0,:,:], c_combined[:,1,:,:]], dim=2)
+
+            # Adjust hidden states if needed
+            dec_layers = model.decoder.rnn.num_layers
+            if dec_h.size(0) < dec_layers:
+                last_h = dec_h[-1:].repeat(dec_layers - dec_h.size(0), 1, 1)
+                dec_h = torch.cat([dec_h, last_h], dim=0)
+                last_c = dec_c[-1:].repeat(dec_layers - dec_c.size(0), 1, 1)
+                dec_c = torch.cat([dec_c, last_c], dim=0)
 
             hidden = (dec_h, dec_c)
             output_tokens = []
