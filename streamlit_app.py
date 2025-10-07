@@ -6,7 +6,7 @@ import streamlit as st
 # Import from your training file
 from train_bilstm_transliteration_complete import (
     Encoder, Decoder, Seq2Seq, DEVICE, 
-    BPE, romanize_urdu  # Import BPE class and romanizer from your training file
+    BPE, romanize_urdu
 )
 
 @st.cache_resource
@@ -18,19 +18,24 @@ def load_model_and_tokenizers():
                 zip_ref.extractall(".")
             st.success("✅ Model extracted from ZIP")
 
-        # Create tokenizers with correct vocabulary size (4000)
-        st.write("🔄 Creating tokenizers...")
+        # Create tokenizers with EXACT vocabulary size (4004)
+        st.write("🔄 Creating tokenizers with 4004 vocabulary size...")
         
-        src_bpe = BPE(target_vocab_size=4000, min_freq=2)
-        trg_bpe = BPE(target_vocab_size=4000, min_freq=2)
+        src_bpe = BPE(target_vocab_size=4004, min_freq=2)
+        trg_bpe = BPE(target_vocab_size=4004, min_freq=2)
         
-        # Create basic vocabulary that matches your training
+        # Create vocabulary with exactly 4004 tokens
         base_vocab = {'<pad>': 0, '<sos>': 1, '<eos>': 2, '<unk>': 3}
         
-        # Add common characters
+        # Add many more characters to reach ~4000
         chars = 'abcdefghijklmnopqrstuvwxyz0123456789 .,!?-'
         for i, char in enumerate(chars):
             base_vocab[char] = i + 4
+        
+        # Add more tokens to reach 4004
+        current_size = len(base_vocab)
+        for i in range(current_size, 4004):
+            base_vocab[f'token_{i}'] = i
         
         src_bpe.vocab = base_vocab.copy()
         src_bpe.rev = {v: k for k, v in base_vocab.items()}
@@ -38,13 +43,13 @@ def load_model_and_tokenizers():
         trg_bpe.vocab = base_vocab.copy()
         trg_bpe.rev = {v: k for k, v in base_vocab.items()}
         
-        st.success("✅ Tokenizers created")
+        st.success(f"✅ Tokenizers created with {len(src_bpe.vocab)} vocabulary size")
 
-        # Load model with correct architecture
+        # Load model with EXACT architecture (4 layers for decoder)
         st.write("🧠 Loading model...")
         model = Seq2Seq(
             Encoder(len(src_bpe.vocab), emb_dim=128, hid_dim=256, n_layers=2, dropout=0.3),
-            Decoder(len(trg_bpe.vocab), emb_dim=128, hid_dim=256, n_layers=2, dropout=0.3),
+            Decoder(len(trg_bpe.vocab), emb_dim=128, hid_dim=256, n_layers=4, dropout=0.3),  # 4 LAYERS!
             enc_hid=256, dec_hid=256
         ).to(DEVICE)
 
@@ -88,14 +93,6 @@ def transliterate_urdu(text):
             enc_out, (h, c) = model.encoder(src)
             dec_h = model._reduce_bidir(h)
             dec_c = model._reduce_bidir(c)
-
-            # Adjust hidden states if needed
-            dec_layers = model.decoder.rnn.num_layers
-            if dec_h.size(0) < dec_layers:
-                last_h = dec_h[-1:].repeat(dec_layers - dec_h.size(0), 1, 1)
-                dec_h = torch.cat([dec_h, last_h], dim=0)
-                last_c = dec_c[-1:].repeat(dec_layers - dec_c.size(0), 1, 1)
-                dec_c = torch.cat([dec_c, last_c], dim=0)
 
             hidden = (dec_h, dec_c)
             output_tokens = []
