@@ -4,6 +4,13 @@ from train_bilstm_transliteration_complete import Encoder, Decoder, Seq2Seq, BPE
 
 @st.cache_resource
 def load_model_and_bpe():
+
+        # === UNZIP THE MODEL IF NOT ALREADY ===
+    if not os.path.exists("exp_small_best.pt") and os.path.exists("exp_small_best.zip"):
+        with zipfile.ZipFile("exp_small_best.zip", "r") as zip_ref:
+            zip_ref.extractall(".")
+            st.write("✅ Model extracted from ZIP")
+            
     src_bpe = torch.load("src_bpe.pkl", map_location=DEVICE)
     trg_bpe = torch.load("trg_bpe.pkl", map_location=DEVICE)
 
