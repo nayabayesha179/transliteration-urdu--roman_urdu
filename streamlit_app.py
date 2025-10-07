@@ -36,8 +36,8 @@ def load_model():
         
         # You need to know the vocabulary sizes from your training
         # Try common sizes or detect from state_dict
-        src_vocab_size = 4000  # From your earlier error
-        trg_vocab_size = 4000  # From your earlier error
+        src_vocab_size = 4004  # From your earlier error
+        trg_vocab_size = 4004  # From your earlier error
         
         # Recreate model with same architecture as training
         encoder = Encoder(src_vocab_size, emb_dim=128, hid_dim=256, n_layers=2, dropout=0.3)
